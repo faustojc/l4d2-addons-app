@@ -484,6 +484,87 @@ fn sized_image_url(url: &str, w: f32) -> String {
     }
 }
 
+/// Unwrapped width a cell's content would like; non-text blocks take whatever they get.
+fn natural_w(ui: &egui::Ui, blocks: &[Block]) -> f32 {
+    let text_w = |s: &[Span], size| {
+        ui.painter()
+            .layout_job(spans_job(ui, s, size, f32::INFINITY).0)
+            .size()
+            .x
+    };
+    blocks
+        .iter()
+        .map(|b| match b {
+            Block::Para(s) => text_w(s, 13.5),
+            Block::Heading(_, s) => text_w(s, 17.0),
+            Block::List(_, items) => 16.0 + items.iter().map(|i| natural_w(ui, i)).fold(0.0, f32::max),
+            _ => f32::INFINITY,
+        })
+        .fold(0.0, f32::max)
+}
+
+/// Column widths like an HTML auto table: columns that fit in an equal share keep their
+/// natural width, the rest split what's left evenly (and wrap).
+fn fit_columns(nat: &[f32], avail: f32) -> Vec<f32> {
+    let mut w = nat.to_vec();
+    let mut left = avail;
+    let mut open: Vec<usize> = (0..nat.len()).collect();
+    while !open.is_empty() {
+        let share = left / open.len() as f32;
+        let (small, big): (Vec<usize>, Vec<usize>) = open.iter().partition(|&&i| nat[i] <= share);
+        if small.is_empty() {
+            for &i in &big {
+                w[i] = share;
+            }
+            break;
+        }
+        for &i in &small {
+            left -= nat[i];
+        }
+        open = big;
+    }
+    w
+}
+
+fn table_ui(ui: &mut egui::Ui, rows: &[Vec<Vec<Block>>]) {
+    let ncols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if ncols == 0 {
+        return;
+    }
+    const PAD: f32 = 6.0;
+    let avail = ui.available_width();
+    let mut nat = vec![0.0f32; ncols];
+    for row in rows {
+        for (c, cell) in row.iter().enumerate() {
+            nat[c] = nat[c].max(natural_w(ui, cell).min(avail) + 2.0 * PAD + 1.0);
+        }
+    }
+    let widths = fit_columns(&nat, avail);
+    let stripe = ui.visuals().faint_bg_color;
+    for (r, row) in rows.iter().enumerate() {
+        egui::Frame::new()
+            .fill(if r % 2 == 0 { stripe } else { Color32::TRANSPARENT })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.horizontal_top(|ui| {
+                    for (cell, &w) in row.iter().zip(&widths) {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(w, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(w);
+                                egui::Frame::new()
+                                    .inner_margin(egui::Margin::symmetric(PAD as i8, 3))
+                                    .show(ui, |ui| show(ui, cell));
+                            },
+                        );
+                    }
+                });
+            });
+        ui.add_space(-ui.spacing().item_spacing.y);
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, blocks: &[Block]) {
     for (i, b) in blocks.iter().enumerate() {
         if i > 0 {
@@ -527,7 +608,12 @@ pub fn show(ui: &mut egui::Ui, blocks: &[Block]) {
                 egui::Frame::group(ui.style())
                     .fill(ui.visuals().extreme_bg_color)
                     .show(ui, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(t).monospace()).wrap());
+                        // Code keeps its lines; long ones scroll sideways instead of wrapping.
+                        egui::ScrollArea::horizontal()
+                            .id_salt(ui.next_auto_id())
+                            .show(ui, |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(t).monospace()).extend());
+                            });
                     });
             }
             Block::List(ordered, items) => {
@@ -545,18 +631,7 @@ pub fn show(ui: &mut egui::Ui, blocks: &[Block]) {
             Block::Hr => {
                 ui.separator();
             }
-            Block::Table(rows) => {
-                egui::Grid::new(ui.next_auto_id())
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for row in rows {
-                            for cell in row {
-                                ui.vertical(|ui| show(ui, cell));
-                            }
-                            ui.end_row();
-                        }
-                    });
-            }
+            Block::Table(rows) => table_ui(ui, rows),
             Block::Spoiler(inner) => {
                 egui::CollapsingHeader::new(egui::RichText::new("Spoiler").color(Color32::GRAY))
                     .id_salt(ui.next_auto_id())
@@ -601,6 +676,15 @@ mod tests {
         let Block::Para(s) = &b[2] else { panic!() };
         assert_eq!(s[1].text, "https://a.b/c");
         assert_eq!(s[2].text, ".");
+    }
+    #[test]
+    fn table_columns_fit() {
+        // fits: natural widths kept
+        assert_eq!(fit_columns(&[50.0, 80.0], 300.0), vec![50.0, 80.0]);
+        // narrow column keeps natural width, wide one gets the rest
+        assert_eq!(fit_columns(&[60.0, 900.0], 300.0), vec![60.0, 240.0]);
+        // both too wide: even split
+        assert_eq!(fit_columns(&[500.0, 900.0], 300.0), vec![150.0, 150.0]);
     }
     #[test]
     fn tolerates_garbage() {
