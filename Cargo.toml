@@ -1,0 +1,45 @@
+[package]
+name = "l4d2-addons-manager"
+version = "0.1.0"
+edition = "2024"
+description = "Fast desktop add-on manager and Workshop browser for Left 4 Dead 2"
+license = "MIT"
+repository = "https://github.com/faustojc/l4d2-addons-app"
+readme = "README.md"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard", "links", "x11", "wayland"] }
+egui = "0.37"
+egui_extras = { version = "0.37", features = ["http", "image"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fuzzy-matcher = "0.3"
+trash = "5"
+rfd = "0.18"
+
+# Embeds the icon and version info into the .exe (build scripts run on the host, so this is Windows-only).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# `cargo deb` (Linux .deb package)
+[package.metadata.deb]
+name = "l4d2-addons-manager"
+maintainer = "faustojc"
+section = "games"
+extended-description = "Manage Left 4 Dead 2 add-ons outside the game: fuzzy search, filters, conflicts, update checks and a Workshop browser that installs straight into addons/."
+depends = "$auto, xdg-utils"
+assets = [
+    ["target/release/l4d2-addons-manager", "usr/bin/", "755"],
+    ["packaging/linux/l4d2-addons-manager.desktop", "usr/share/applications/", "644"],
+    ["assets/icon-256.png", "usr/share/icons/hicolor/256x256/apps/l4d2-addons-manager.png", "644"],
+    ["assets/icon.png", "usr/share/icons/hicolor/1024x1024/apps/l4d2-addons-manager.png", "644"],
+]

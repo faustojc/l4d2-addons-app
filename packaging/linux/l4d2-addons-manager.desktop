@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=L4D2 Addons Manager
+GenericName=Add-on Manager
+Comment=Manage Left 4 Dead 2 add-ons and browse the Workshop
+Exec=l4d2-addons-manager
+Icon=l4d2-addons-manager
+Terminal=false
+Categories=Game;Utility;
+Keywords=left4dead;l4d2;addons;mods;workshop;vpk;
+StartupWMClass=l4d2-addons-manager
