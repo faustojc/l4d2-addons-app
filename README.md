@@ -45,7 +45,7 @@ It's a native Rust + egui app: one small executable, starts instantly, scans hun
 - **Requires:** required Workshop items with their installed/enabled state and one-click Install / Enable.
 - **Required by:** installed add-ons that depend on this one. **Used by…** lists every Workshop item that requires it.
 - **Conflicts:** other add-ons shipping the same files, grouped by type, with overrides of stock game files marked.
-- Full file list.
+- Full file list as a collapsible folder tree.
 
 ### Workshop browser
 - Search, sort (popular this week/month/…, recent, updated, top rated, most subscribed), tag filter, collections and paging.
@@ -54,7 +54,7 @@ It's a native Rust + egui app: one small executable, starts instantly, scans hun
 - Paste a Workshop link, id or collection link to install it.
 
 ### Conflicts
-Every pair of add-ons replacing the same path with **different** contents. Identical copies and merged `*_addon.nut` / `addoninfo` files are ignored. Pairs are ranked by how many stock game files they replace.
+Every pair of add-ons replacing the same path with **different** contents. Identical copies and merged `*_addon.nut` / `addoninfo` files are ignored. Map add-ons only clash with another copy of the same map: different campaigns sharing assets never load together, and a skin or script overriding a map's file is the intended override. Pairs are ranked by how many stock game files they replace.
 
 ### Updates
 Compares each item's Workshop `time_updated` with what the app installed (or the file date for add-ons it didn't install). **Update all** replaces files in place. Add-ons whose size differs from the Workshop file are flagged as *patched*, so a locally edited VPK isn't mistaken for an outdated one.

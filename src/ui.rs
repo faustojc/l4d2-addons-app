@@ -2282,26 +2282,72 @@ fn preview_sections(
                     .fill(th::INPUT)
                     .corner_radius(2)
                     .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .max_height(300.0)
-                            .id_salt("files")
-                            .show_rows(ui, 16.0, a.files.len(), |ui, range| {
-                                for (p, _) in &a.files[range] {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(p.as_ref())
-                                                .monospace()
-                                                .size(11.5)
-                                                .color(MUTED),
-                                        )
-                                        .truncate(),
-                                    );
-                                }
-                            });
-                    });
+                    .show(ui, |ui| file_tree_ui(ui, a));
             },
         );
+    }
+}
+
+/// Collapsible folder tree of an add-on's files, at most 300px tall.
+fn file_tree_ui(ui: &mut egui::Ui, a: &Addon) {
+    const ROW: f32 = 18.0;
+    const INDENT: f32 = 14.0;
+    let tree_id = egui::Id::unique(("ftree", a.key.as_str(), a.files.len()));
+    let open_id = egui::Id::unique(("ftree_open", a.key.as_str()));
+    let tree: Arc<Vec<library::TreeRow>> = match ui.data_mut(|d| d.get_temp(tree_id)) {
+        Some(t) => t,
+        None => {
+            let t = Arc::new(library::file_tree(&a.files));
+            ui.data_mut(|d| d.insert_temp(tree_id, t.clone()));
+            t
+        }
+    };
+    let mut open: HashSet<usize> = ui.data_mut(|d| d.get_temp(open_id)).unwrap_or_default();
+    let rows = library::visible_rows(&tree, &open);
+    let mut toggle = None;
+    egui::ScrollArea::vertical()
+        .max_height(300.0)
+        .auto_shrink([false, true])
+        .id_salt("files")
+        .show_rows(ui, ROW, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for &i in &rows[range] {
+                let r = &tree[i];
+                let sense = if r.dir.is_some() { Sense::click() } else { Sense::hover() };
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), sense);
+                let x = rect.left() + r.depth as f32 * INDENT;
+                let y = rect.center().y;
+                let font = FontId::monospace(11.5);
+                let p = ui.painter();
+                match r.dir {
+                    Some((count, _)) => {
+                        if resp.hovered() {
+                            p.rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                        }
+                        let c = egui::pos2(x + 5.0, y);
+                        let pts = if open.contains(&i) {
+                            vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)]
+                        } else {
+                            vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.0, 4.0)]
+                        };
+                        p.add(egui::Shape::convex_polygon(pts, MUTED, egui::Stroke::NONE));
+                        let t = p.text(egui::pos2(x + INDENT, y), egui::Align2::LEFT_CENTER, format!("{}/", r.name), font, TEXT);
+                        p.text(egui::pos2(t.right() + 8.0, y), egui::Align2::LEFT_CENTER, count.to_string(), FontId::proportional(11.0), DIM);
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            toggle = Some(i);
+                        }
+                    }
+                    None => {
+                        p.text(egui::pos2(x + INDENT, y), egui::Align2::LEFT_CENTER, r.name.as_ref(), font, MUTED);
+                    }
+                }
+            }
+        });
+    if let Some(i) = toggle {
+        if !open.remove(&i) {
+            open.insert(i);
+        }
+        ui.data_mut(|d| d.insert_temp(open_id, open));
     }
 }
 

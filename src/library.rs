@@ -313,7 +313,25 @@ fn stock_overrides(game: &Path, addons: &[Addon]) -> HashSet<Box<str>> {
     out
 }
 
+fn is_map_file(p: &str) -> bool {
+    p.starts_with("maps/") && p.ends_with(".bsp")
+}
+
+/// A file that defines which map/campaign an add-on *is*: two add-ons sharing one are the same map.
+fn defines_map(p: &str) -> bool {
+    is_map_file(p) || (p.starts_with("missions/") && p.ends_with(".txt"))
+}
+
 pub fn compute_conflicts(lib: &mut Library) {
+    // Map add-ons only load their assets while that map is played, so they can't clash with
+    // other maps (you play one at a time), and a skin/script add-on overriding a map's file is
+    // the intended override. Only two copies of the *same* map count.
+    let is_map: Vec<bool> = lib
+        .addons
+        .iter()
+        // split campaigns ("PART 2/6") may ship only assets, so trust addoninfo's campaign flag too
+        .map(|a| a.info.content.contains(&"Campaigns") || a.files.iter().any(|(p, _)| defines_map(p)))
+        .collect();
     let mut by_path: HashMap<&str, Vec<(usize, u32)>> = HashMap::new();
     for (i, a) in lib.addons.iter().enumerate() {
         for (p, crc) in &a.files {
@@ -322,15 +340,17 @@ pub fn compute_conflicts(lib: &mut Library) {
             }
         }
     }
-    let mut pairs: HashMap<(usize, usize), (Vec<Box<str>>, usize)> = HashMap::new();
+    // (differing files, identical count, share a map-defining file)
+    let mut pairs: HashMap<(usize, usize), (Vec<Box<str>>, usize, bool)> = HashMap::new();
     for (path, owners) in by_path.iter().filter(|(_, o)| o.len() > 1) {
         for x in 0..owners.len() {
             for y in x + 1..owners.len() {
                 let (a, b) = (owners[x].0.min(owners[y].0), owners[x].0.max(owners[y].0));
-                if a == b {
+                if a == b || is_map[a] != is_map[b] {
                     continue;
                 }
                 let e = pairs.entry((a, b)).or_default();
+                e.2 |= defines_map(path);
                 if owners[x].1 == owners[y].1 {
                     e.1 += 1;
                 } else {
@@ -341,7 +361,8 @@ pub fn compute_conflicts(lib: &mut Library) {
     }
     let mut conflicts: Vec<Conflict> = pairs
         .into_iter()
-        .map(|((a, b), (mut files, identical))| {
+        .filter(|((a, _), (_, _, same_map))| !is_map[*a] || *same_map)
+        .map(|((a, b), (mut files, identical, _))| {
             // stock overrides first, then alphabetical
             files.sort_by(|x, y| {
                 lib.stock
@@ -372,6 +393,66 @@ pub fn compute_conflicts(lib: &mut Library) {
         lib.addons[c.b].conflicts.push(ci);
     }
     lib.conflicts = conflicts;
+}
+
+/// One row of an add-on's file tree, in display (pre-order) order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreeRow {
+    pub depth: usize,
+    pub name: Box<str>,
+    /// Folders: (files below it, index just past its subtree). Files: None.
+    pub dir: Option<(usize, usize)>,
+}
+
+/// Folders first (alphabetical), then files.
+pub fn file_tree(files: &[(Box<str>, u32)]) -> Vec<TreeRow> {
+    #[derive(Default)]
+    struct Dir<'a> {
+        dirs: std::collections::BTreeMap<&'a str, Dir<'a>>,
+        files: Vec<&'a str>,
+    }
+    fn walk(d: &Dir, depth: usize, out: &mut Vec<TreeRow>) -> usize {
+        let mut n = 0;
+        for (name, sub) in &d.dirs {
+            let at = out.len();
+            out.push(TreeRow { depth, name: (*name).into(), dir: None });
+            let c = walk(sub, depth + 1, out);
+            out[at].dir = Some((c, out.len()));
+            n += c;
+        }
+        let mut files = d.files.clone();
+        files.sort_unstable();
+        for f in files {
+            out.push(TreeRow { depth, name: f.into(), dir: None });
+        }
+        n + d.files.len()
+    }
+    let mut root = Dir::default();
+    for (p, _) in files {
+        let (mut d, mut rest) = (&mut root, p.as_ref());
+        while let Some((dir, tail)) = rest.split_once('/') {
+            d = d.dirs.entry(dir).or_default();
+            rest = tail;
+        }
+        d.files.push(rest);
+    }
+    let mut out = Vec::new();
+    walk(&root, 0, &mut out);
+    out
+}
+
+/// Indices of the rows shown when only the folders in `open` are expanded.
+pub fn visible_rows(tree: &[TreeRow], open: &HashSet<usize>) -> Vec<usize> {
+    let mut v = Vec::new();
+    let mut i = 0;
+    while i < tree.len() {
+        v.push(i);
+        i = match tree[i].dir {
+            Some((_, end)) if !open.contains(&i) => end,
+            _ => i + 1,
+        };
+    }
+    v
 }
 
 /// Short category of a conflicting path, for grouping in the UI.
@@ -405,5 +486,45 @@ mod tests {
         assert!(ignored("scripts/vscripts/director_base_addon.nut"));
         assert!(!ignored("scripts/vscripts/sub/director_base_addon.nut"));
         assert!(!ignored("models/v_rifle.mdl"));
+    }
+
+    fn addon(files: &[(&str, u32)]) -> Addon {
+        let mut a = load_addon(Path::new("missing.vpk"), false);
+        a.files = files.iter().map(|(p, c)| ((*p).into(), *c)).collect();
+        a
+    }
+
+    #[test]
+    fn maps_only_conflict_with_same_map() {
+        let map_a = addon(&[("maps/c1m1.bsp", 1), ("materials/shared.vmt", 1)]);
+        let map_b = addon(&[("maps/other.bsp", 2), ("materials/shared.vmt", 2)]);
+        let map_a2 = addon(&[("maps/c1m1.bsp", 3), ("materials/shared.vmt", 3)]);
+        let skin = addon(&[("materials/shared.vmt", 4), ("models/x.mdl", 1)]);
+        let skin2 = addon(&[("models/x.mdl", 2)]);
+        let mut lib = Library {
+            addons: vec![map_a, map_b, map_a2, skin, skin2],
+            ..Default::default()
+        };
+        compute_conflicts(&mut lib);
+        let pairs: Vec<(usize, usize)> = lib.conflicts.iter().map(|c| (c.a, c.b)).collect();
+        // map_a vs map_a2 (same map), skin vs skin2; not map_b, not map vs skin
+        assert_eq!(pairs.len(), 2, "{pairs:?}");
+        assert!(pairs.contains(&(0, 2)));
+        assert!(pairs.contains(&(3, 4)));
+    }
+
+    #[test]
+    fn tree_collapses() {
+        let t = file_tree(&[
+            ("models/b.mdl".into(), 0),
+            ("addoninfo.txt".into(), 0),
+            ("models/sub/a.mdl".into(), 0),
+        ]);
+        let names: Vec<&str> = t.iter().map(|r| r.name.as_ref()).collect();
+        assert_eq!(names, ["models", "sub", "a.mdl", "b.mdl", "addoninfo.txt"]);
+        assert_eq!(t[0].dir, Some((2, 4)));
+        assert_eq!(visible_rows(&t, &HashSet::new()), [0, 4]);
+        assert_eq!(visible_rows(&t, &HashSet::from([0])), [0, 1, 3, 4]);
+        assert_eq!(visible_rows(&t, &HashSet::from([0, 1])), [0, 1, 2, 3, 4]);
     }
 }
