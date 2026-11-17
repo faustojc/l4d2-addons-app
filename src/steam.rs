@@ -362,6 +362,10 @@ pub struct PageInfo {
     /// Items this one says it requires: (id, title).
     pub required: Vec<(u64, String)>,
     pub creators: Vec<String>,
+    /// Screenshots the author uploaded to the item's gallery (full-size URLs, no query).
+    /// None = cached before galleries were read, so the page is fetched again.
+    #[serde(default)]
+    pub previews: Option<Vec<String>>,
     pub fetched: u64,
 }
 
@@ -418,6 +422,17 @@ pub fn parse_item_page(html: &str) -> PageInfo {
             }
         }
     }
+    let mut previews = Vec::new();
+    for part in html.split("highlight_strip_screenshot\"").skip(1) {
+        let url = part
+            .split_once("<img src=\"")
+            .and_then(|(_, t)| t.split(['"', '?']).next())
+            .map(unescape_html);
+        if let Some(u) = url.filter(|u| u.starts_with("https://") && !previews.contains(u)) {
+            previews.push(u);
+        }
+    }
+    info.previews = Some(previews);
     for part in html.split("class=\"friendBlockContent\">").skip(1) {
         if let Some(e) = part.find("<br") {
             let name = strip_tags(&part[..e]);
@@ -429,16 +444,17 @@ pub fn parse_item_page(html: &str) -> PageInfo {
     info
 }
 
-/// With a (free) Steam Web API key: required items for up to 100 ids per call, no scraping.
+/// With a (free) Steam Web API key: required items and gallery screenshots for up to 100 ids
+/// per call, no scraping.
 pub fn fetch_children(
     agent: &ureq::Agent,
     key: &str,
     ids: &[u64],
-) -> Result<Vec<(u64, Vec<u64>)>, Error> {
+) -> Result<Vec<(u64, Vec<u64>, Vec<String>)>, Error> {
     let mut out = Vec::new();
     for chunk in ids.chunks(100) {
         let mut url = format!(
-            "https://api.steampowered.com/IPublishedFileService/GetDetails/v1/?key={}&includechildren=true",
+            "https://api.steampowered.com/IPublishedFileService/GetDetails/v1/?key={}&includechildren=true&includeadditionalpreviews=true",
             enc(key.trim())
         );
         for (i, id) in chunk.iter().enumerate() {
@@ -464,7 +480,16 @@ pub fn fetch_children(
                 .map(|c| num(&c["publishedfileid"]))
                 .filter(|&n| n != 0)
                 .collect();
-            out.push((num(&d["publishedfileid"]), kids));
+            // preview_type 0 = image (1 = YouTube video, 2 = sketchfab)
+            let previews = d["previews"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["preview_type"].as_u64().unwrap_or(0) == 0)
+                .filter_map(|p| p["url"].as_str())
+                .map(|u| u.split('?').next().unwrap_or(u).to_string())
+                .collect();
+            out.push((num(&d["publishedfileid"]), kids, previews));
         }
     }
     Ok(out)
@@ -555,6 +580,18 @@ pub fn parse_id(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn page_gallery_screenshots() {
+        let html = r#"<div class="highlight_strip_item highlight_strip_movie" id="thumb_movie_1"><img src="https://x/movie.jpg"></div>
+            <div role="button" class="highlight_strip_item highlight_strip_screenshot" id="thumb_screenshot_2" >
+            <img src="https://images.steamusercontent.com/ugc/1/AB/?imw=116&amp;imh=65">
+            <div class="highlight_strip_item highlight_strip_screenshot" id="thumb_screenshot_3"><img src="https://images.steamusercontent.com/ugc/2/CD/">"#;
+        assert_eq!(
+            parse_item_page(html).previews.unwrap(),
+            ["https://images.steamusercontent.com/ugc/1/AB/", "https://images.steamusercontent.com/ugc/2/CD/"]
+        );
+        assert_eq!(parse_item_page("<html></html>").previews, Some(vec![]));
+    }
     #[test]
     fn parses_ids() {
         assert_eq!(

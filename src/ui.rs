@@ -400,6 +400,7 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
     }
 
+    lightbox_ui(&ctx);
     confirm_modal(app, &ctx);
     toasts(app, &ctx);
     apply(app, acts);
@@ -1880,7 +1881,14 @@ fn preview(
         thumb(app, a, None, 0)
     };
     let hero_h = (w * 0.56).min(320.0);
-    let (hero_rect, _) = ui.allocate_exact_size(egui::vec2(w, hero_h), Sense::hover());
+    // gallery: the main preview image, then the screenshots the author uploaded
+    let shots: &[String] = page.and_then(|p| p.previews.as_deref()).unwrap_or(&[]);
+    let main_img = d.map(|d| d.preview_url.as_str()).filter(|u| !u.is_empty());
+    let gallery: Vec<String> = main_img.into_iter().map(str::to_string).chain(shots.iter().cloned()).collect();
+    let (hero_rect, hero_resp) = ui.allocate_exact_size(egui::vec2(w, hero_h), Sense::click());
+    if main_img.is_some() && hero_resp.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+        open_lightbox(ui.ctx(), &gallery, 0);
+    }
     th::vgradient(
         ui.painter(),
         hero_rect,
@@ -1924,6 +1932,10 @@ fn preview(
                 ui.spinner();
                 ui.label(RichText::new("Loading Workshop details…").color(MUTED));
             });
+        }
+        if !shots.is_empty() {
+            ui.add_space(4.0);
+            gallery_strip(ui, &gallery, gallery.len() - shots.len());
         }
 
         // status
@@ -2281,6 +2293,100 @@ fn preview_sections(
                 file_tree_ui(ui, a);
             },
         );
+    }
+}
+
+const LIGHTBOX: &str = "lightbox";
+
+fn open_lightbox(ctx: &egui::Context, urls: &[String], at: usize) {
+    let state: (Arc<Vec<String>>, usize) = (Arc::new(urls.to_vec()), at);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(LIGHTBOX), state));
+}
+
+/// Steam-style row of screenshot thumbnails; `first` = index of the first screenshot in `urls`.
+fn gallery_strip(ui: &mut egui::Ui, urls: &[String], first: usize) {
+    const TW: f32 = 112.0;
+    const TH: f32 = 63.0;
+    egui::ScrollArea::horizontal()
+        .id_salt("gallery")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (k, u) in urls.iter().enumerate().skip(first) {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(TW, TH), Sense::click());
+                    ui.painter().rect_filled(rect, 2.0, th::BG_DEEP);
+                    let img = egui::Image::new(bbcode::sized_image_url(u, TW * 2.0)).show_loading_spinner(true);
+                    let size = img.load_and_calc_size(ui, rect.size()).unwrap_or(rect.size());
+                    img.paint_at(ui, egui::Rect::from_center_size(rect.center(), size));
+                    let hover = resp.hovered();
+                    ui.painter().rect_stroke(
+                        rect,
+                        2.0,
+                        egui::Stroke::new(if hover { 2.0 } else { 1.0 }, if hover { ACCENT } else { th::SURFACE_HI }),
+                        egui::StrokeKind::Inside,
+                    );
+                    if resp.on_hover_cursor(egui::CursorIcon::ZoomIn).clicked() {
+                        open_lightbox(ui.ctx(), urls, k);
+                    }
+                }
+            });
+        });
+}
+
+/// Enlarged gallery image centered over the window. Esc / click outside closes; arrows page.
+fn lightbox_ui(ctx: &egui::Context) {
+    let id = egui::Id::unique(LIGHTBOX);
+    let Some((urls, mut i)) = ctx.data_mut(|d| d.get_temp::<(Arc<Vec<String>>, usize)>(id)) else {
+        return;
+    };
+    let n = urls.len();
+    if n == 0 {
+        return ctx.data_mut(|d| d.remove::<(Arc<Vec<String>>, usize)>(id));
+    }
+    i = i.min(n - 1);
+    let scr = ctx.content_rect();
+    let max = egui::vec2(scr.width() * 0.86, scr.height() * 0.78);
+    let (left, right) = ctx.input(|inp| (inp.key_pressed(Key::ArrowLeft), inp.key_pressed(Key::ArrowRight)));
+    let mut step = right as isize - left as isize;
+    let r = egui::Modal::new(id.with("modal"))
+        .frame(egui::Frame::new())
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                let img = egui::Image::new(bbcode::sized_image_url(&urls[i], max.x.min(2048.0)))
+                    .max_size(max)
+                    .corner_radius(3.0)
+                    .show_loading_spinner(true);
+                // reserve the full box while loading so the arrows don't jump around
+                let size = img.load_and_calc_size(ui, max).unwrap_or(max);
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                img.paint_at(ui, rect);
+                if n > 1 {
+                    // arrows sit on the image's edges, counter underneath
+                    for (dir, x) in [(-1isize, rect.left() + 30.0), (1, rect.right() - 30.0)] {
+                        let r = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(40.0, 60.0));
+                        let resp = ui.interact(r, id.with(dir), Sense::click());
+                        let hot = resp.hovered();
+                        let p = ui.painter();
+                        p.rect_filled(r, 4.0, Color32::from_black_alpha(if hot { 210 } else { 130 }));
+                        let (c, dx) = (r.center(), 5.0 * dir as f32);
+                        let s = egui::Stroke::new(2.5, if hot { ACCENT } else { TEXT_STRONG });
+                        p.line_segment([c + egui::vec2(-dx, -9.0), c + egui::vec2(dx, 0.0)], s);
+                        p.line_segment([c + egui::vec2(dx, 0.0), c + egui::vec2(-dx, 9.0)], s);
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            step = dir;
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(format!("{} / {n}", i + 1)).color(TEXT));
+                }
+            });
+        });
+    if r.should_close() {
+        ctx.data_mut(|d| d.remove::<(Arc<Vec<String>>, usize)>(id));
+    } else if step != 0 {
+        let j = (i as isize + step).rem_euclid(n as isize) as usize;
+        ctx.data_mut(|d| d.insert_temp(id, (urls, j)));
     }
 }
 

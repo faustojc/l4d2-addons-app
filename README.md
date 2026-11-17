@@ -41,6 +41,7 @@ It's a native Rust + egui app: one small executable, starts instantly, scans hun
 
 ### Preview panel
 - The **Workshop description** (Steam BBCode rendered: headings, lists, images, links, quotes, tables, spoilers), not the bare `addoninfo.txt`.
+- The author's **screenshot gallery**, as on the Workshop page: click a thumbnail (or the main image) to view it enlarged, ◀ ▶ / arrow keys to page, Esc to close.
 - Size, dates, subscribers, favorites, views, tags and creators.
 - **Requires:** required Workshop items with their installed/enabled state and one-click Install / Enable.
 - **Required by:** installed add-ons that depend on this one. **Used by…** lists every Workshop item that requires it.

@@ -22,7 +22,8 @@ pub enum Msg {
     Page(u64, PageInfo),
     /// (items left, seconds paused by rate limit)
     PageQueue(usize, u64),
-    Children(Vec<(u64, Vec<u64>)>),
+    /// (item, required ids, gallery screenshot urls)
+    Children(Vec<(u64, Vec<u64>, Vec<String>)>),
     ChildrenFailed(Vec<u64>, String),
     Browse(BrowseQuery, Result<Vec<u64>, String>),
     InstallCollection(u64, Result<Vec<u64>, String>),
@@ -407,7 +408,7 @@ impl App {
             .cache
             .pages
             .get(&id)
-            .is_some_and(|p| steam::now().saturating_sub(p.fetched) < PAGE_TTL);
+            .is_some_and(|p| p.previews.is_some() && steam::now().saturating_sub(p.fetched) < PAGE_TTL);
         if fresh {
             return;
         }
@@ -441,7 +442,7 @@ impl App {
                 self.cache
                     .pages
                     .get(id)
-                    .is_none_or(|p| now.saturating_sub(p.fetched) > PAGE_TTL)
+                    .is_none_or(|p| p.previews.is_none() || now.saturating_sub(p.fetched) > PAGE_TTL)
             })
             .collect();
         if want.is_empty() || key.is_empty() {
@@ -562,7 +563,7 @@ impl App {
                 }
                 Msg::Children(list) => {
                     let mut kids_all = Vec::new();
-                    for (id, kids) in list {
+                    for (id, kids, previews) in list {
                         self.pending_children.remove(&id);
                         kids_all.extend(kids.iter().copied());
                         let creators = self
@@ -574,6 +575,7 @@ impl App {
                         let page = PageInfo {
                             required: kids.into_iter().map(|k| (k, String::new())).collect(),
                             creators,
+                            previews: Some(previews),
                             fetched: steam::now(),
                         };
                         self.on_page(id, page);

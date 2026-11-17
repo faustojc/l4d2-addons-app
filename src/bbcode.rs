@@ -476,7 +476,7 @@ fn spans_ui(ui: &mut egui::Ui, spans: &[Span], size: f32) {
 }
 
 /// Steam's image CDN can downscale; avoid uploading 4K GIFs to the GPU for a side panel.
-fn sized_image_url(url: &str, w: f32) -> String {
+pub(crate) fn sized_image_url(url: &str, w: f32) -> String {
     if url.contains("steamusercontent.com") && !url.contains('?') {
         format!("{url}?imw={}&ima=fit", (w as u32).clamp(64, 1024))
     } else {
