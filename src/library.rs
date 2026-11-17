@@ -402,6 +402,10 @@ pub struct TreeRow {
     pub name: Box<str>,
     /// Folders: (files below it, index just past its subtree). Files: None.
     pub dir: Option<(usize, usize)>,
+    /// Index of the containing folder's row (None at the root).
+    pub parent: Option<usize>,
+    /// Last entry in its folder (its thread line ends here).
+    pub last: bool,
 }
 
 /// Folders first (alphabetical), then files.
@@ -411,19 +415,25 @@ pub fn file_tree(files: &[(Box<str>, u32)]) -> Vec<TreeRow> {
         dirs: std::collections::BTreeMap<&'a str, Dir<'a>>,
         files: Vec<&'a str>,
     }
-    fn walk(d: &Dir, depth: usize, out: &mut Vec<TreeRow>) -> usize {
-        let mut n = 0;
+    fn walk(d: &Dir, depth: usize, parent: Option<usize>, out: &mut Vec<TreeRow>) -> usize {
+        let row = |name: &str| TreeRow { depth, name: name.into(), dir: None, parent, last: false };
+        let (mut n, mut last) = (0, None);
         for (name, sub) in &d.dirs {
             let at = out.len();
-            out.push(TreeRow { depth, name: (*name).into(), dir: None });
-            let c = walk(sub, depth + 1, out);
+            out.push(row(name));
+            let c = walk(sub, depth + 1, Some(at), out);
             out[at].dir = Some((c, out.len()));
             n += c;
+            last = Some(at);
         }
         let mut files = d.files.clone();
         files.sort_unstable();
         for f in files {
-            out.push(TreeRow { depth, name: f.into(), dir: None });
+            last = Some(out.len());
+            out.push(row(f));
+        }
+        if let Some(l) = last {
+            out[l].last = true;
         }
         n + d.files.len()
     }
@@ -437,7 +447,7 @@ pub fn file_tree(files: &[(Box<str>, u32)]) -> Vec<TreeRow> {
         d.files.push(rest);
     }
     let mut out = Vec::new();
-    walk(&root, 0, &mut out);
+    walk(&root, 0, None, &mut out);
     out
 }
 
@@ -523,6 +533,9 @@ mod tests {
         let names: Vec<&str> = t.iter().map(|r| r.name.as_ref()).collect();
         assert_eq!(names, ["models", "sub", "a.mdl", "b.mdl", "addoninfo.txt"]);
         assert_eq!(t[0].dir, Some((2, 4)));
+        assert_eq!(t[2].parent, Some(1));
+        let last: Vec<bool> = t.iter().map(|r| r.last).collect();
+        assert_eq!(last, [false, false, true, true, true]);
         assert_eq!(visible_rows(&t, &HashSet::new()), [0, 4]);
         assert_eq!(visible_rows(&t, &HashSet::from([0])), [0, 1, 3, 4]);
         assert_eq!(visible_rows(&t, &HashSet::from([0, 1])), [0, 1, 2, 3, 4]);

@@ -2278,22 +2278,22 @@ fn preview_sections(
             TEXT,
             false,
             |ui| {
-                egui::Frame::new()
-                    .fill(th::INPUT)
-                    .corner_radius(2)
-                    .inner_margin(egui::Margin::same(6))
-                    .show(ui, |ui| file_tree_ui(ui, a));
+                file_tree_ui(ui, a);
             },
         );
     }
 }
 
-/// Collapsible folder tree of an add-on's files, at most 300px tall.
+/// Collapsible folder tree of an add-on's files, threaded like a comment section: each open
+/// folder hangs a line down to its last entry. Click a folder, or any point on its line, to
+/// collapse it. At most 500px tall.
 fn file_tree_ui(ui: &mut egui::Ui, a: &Addon) {
-    const ROW: f32 = 18.0;
-    const INDENT: f32 = 14.0;
+    const ROW: f32 = 20.0;
+    const INDENT: f32 = 16.0;
+    const KNOB: f32 = 5.0; // radius of a folder's +/- knob
     let tree_id = egui::Id::unique(("ftree", a.key.as_str(), a.files.len()));
     let open_id = egui::Id::unique(("ftree_open", a.key.as_str()));
+    let hover_id = egui::Id::unique(("ftree_hover", a.key.as_str()));
     let tree: Arc<Vec<library::TreeRow>> = match ui.data_mut(|d| d.get_temp(tree_id)) {
         Some(t) => t,
         None => {
@@ -2303,46 +2303,121 @@ fn file_tree_ui(ui: &mut egui::Ui, a: &Addon) {
         }
     };
     let mut open: HashSet<usize> = ui.data_mut(|d| d.get_temp(open_id)).unwrap_or_default();
+    // folder whose thread was hovered last frame: its whole line lights up
+    let lit: Option<usize> = ui.data_mut(|d| d.get_temp::<Option<usize>>(hover_id)).flatten();
     let rows = library::visible_rows(&tree, &open);
-    let mut toggle = None;
+    let (mut toggle, mut hovered) = (None, None);
     egui::ScrollArea::vertical()
-        .max_height(300.0)
+        .max_height(500.0)
+        // inside the preview's own scroll area, available height is only what's left on screen
+        .min_scrolled_height(500.0)
         .auto_shrink([false, true])
         .id_salt("files")
         .show_rows(ui, ROW, rows.len(), |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for &i in &rows[range] {
                 let r = &tree[i];
-                let sense = if r.dir.is_some() { Sense::click() } else { Sense::hover() };
-                let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), sense);
-                let x = rect.left() + r.depth as f32 * INDENT;
-                let y = rect.center().y;
-                let font = FontId::monospace(11.5);
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::click());
+                let gx = |depth: usize| rect.left() + depth as f32 * INDENT + KNOB + 1.0;
+                let (y, d) = (rect.center().y, r.depth);
+                let line = |f: usize| {
+                    egui::Stroke::new(if lit == Some(f) { 2.0 } else { 1.0 }, if lit == Some(f) { ACCENT } else { DIM })
+                };
+
+                // ancestors from the parent upwards, with whether the child on our path is its last entry
+                let mut anc = Vec::with_capacity(d);
+                let mut cur = i;
+                while let Some(p) = tree[cur].parent {
+                    anc.push((p, tree[cur].last));
+                    cur = p;
+                }
+
+                // what the pointer targets: a thread line (left of the item) or the row's own folder
+                let target = resp.hover_pos().and_then(|p| {
+                    let col = ((p.x - rect.left()) / INDENT).floor();
+                    if col >= 0.0 && (col as usize) < d {
+                        Some(anc[d - 1 - col as usize].0)
+                    } else {
+                        r.dir.map(|_| i)
+                    }
+                });
+                hovered = hovered.or(target);
+                if target.is_some() && resp.clicked() {
+                    toggle = target;
+                }
+
                 let p = ui.painter();
+                if resp.hovered() && target == Some(i) {
+                    let bg = egui::Rect::from_min_max(egui::pos2(gx(d) - KNOB - 3.0, rect.top()), rect.max);
+                    p.rect_filled(bg, 3.0, th::SURFACE);
+                }
+                // thread lines of ancestors
+                for (j, &(f, child_last)) in anc.iter().enumerate() {
+                    let x = gx(d - 1 - j);
+                    let s = line(f);
+                    if j == 0 {
+                        // elbow into this row: down, round the corner, across to the item
+                        let bend = 6.0;
+                        let end = if r.last { y - bend } else { rect.bottom() };
+                        p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, end)], s);
+                        p.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+                            [egui::pos2(x, y - bend), egui::pos2(x, y), egui::pos2(x + bend, y)],
+                            false,
+                            Color32::TRANSPARENT,
+                            s,
+                        ));
+                        p.line_segment([egui::pos2(x + bend, y), egui::pos2(gx(d) - KNOB - 2.0, y)], s);
+                    } else if !child_last {
+                        p.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], s);
+                    }
+                }
+
+                let font = FontId::monospace(11.5);
+                let c = egui::pos2(gx(d), y);
+                let name_x = gx(d) + KNOB + 6.0;
                 match r.dir {
                     Some((count, _)) => {
-                        if resp.hovered() {
-                            p.rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                        let is_open = open.contains(&i);
+                        let s = line(i);
+                        if is_open {
+                            // start of this folder's own thread
+                            p.line_segment([egui::pos2(c.x, y + KNOB), egui::pos2(c.x, rect.bottom())], s);
                         }
-                        let c = egui::pos2(x + 5.0, y);
-                        let pts = if open.contains(&i) {
-                            vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 3.0)]
-                        } else {
-                            vec![c + egui::vec2(-2.0, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.0, 4.0)]
-                        };
-                        p.add(egui::Shape::convex_polygon(pts, MUTED, egui::Stroke::NONE));
-                        let t = p.text(egui::pos2(x + INDENT, y), egui::Align2::LEFT_CENTER, format!("{}/", r.name), font, TEXT);
-                        p.text(egui::pos2(t.right() + 8.0, y), egui::Align2::LEFT_CENTER, count.to_string(), FontId::proportional(11.0), DIM);
-                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            toggle = Some(i);
+                        let knob = if lit == Some(i) { ACCENT } else { MUTED };
+                        p.circle(c, KNOB, th::PANEL, egui::Stroke::new(1.0, knob));
+                        p.line_segment([c - egui::vec2(2.5, 0.0), c + egui::vec2(2.5, 0.0)], egui::Stroke::new(1.2, knob));
+                        if !is_open {
+                            p.line_segment([c - egui::vec2(0.0, 2.5), c + egui::vec2(0.0, 2.5)], egui::Stroke::new(1.2, knob));
                         }
+                        let t = p.text(egui::pos2(name_x, y), egui::Align2::LEFT_CENTER, r.name.as_ref(), font, TEXT);
+                        p.text(
+                            egui::pos2(t.right() + 8.0, y),
+                            egui::Align2::LEFT_CENTER,
+                            if count == 1 { "1 file".to_string() } else { format!("{count} files") },
+                            FontId::proportional(11.0),
+                            DIM,
+                        );
                     }
                     None => {
-                        p.text(egui::pos2(x + INDENT, y), egui::Align2::LEFT_CENTER, r.name.as_ref(), font, MUTED);
+                        p.circle_filled(c, 2.0, DIM);
+                        let (stem, ext) = match r.name.rfind('.') {
+                            Some(dot) if dot > 0 => r.name.split_at(dot),
+                            _ => (r.name.as_ref(), ""),
+                        };
+                        let t = p.text(egui::pos2(name_x, y), egui::Align2::LEFT_CENTER, stem, font.clone(), MUTED);
+                        p.text(egui::pos2(t.right(), y), egui::Align2::LEFT_CENTER, ext, font, DIM);
                     }
+                }
+                if target.is_some() {
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 }
             }
         });
+    if hovered != lit {
+        ui.data_mut(|d| d.insert_temp(hover_id, hovered));
+        ui.ctx().request_repaint();
+    }
     if let Some(i) = toggle {
         if !open.remove(&i) {
             open.insert(i);
