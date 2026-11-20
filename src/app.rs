@@ -155,6 +155,8 @@ pub struct App {
     pending_enable: HashSet<u64>,
     pub game_running: bool,
     pub pending_write: bool,
+    /// Add-ons whose addonlist.txt state differs from what this app last saved: (key, state in file).
+    pub drift: Vec<(String, bool)>,
     backed_up: bool,
     pub toasts: Vec<Toast>,
     pub confirm: Option<Confirm>,
@@ -229,6 +231,7 @@ impl App {
             pending_enable: HashSet::new(),
             game_running: false,
             pending_write: false,
+            drift: Vec::new(),
             backed_up: false,
             toasts: Vec::new(),
             confirm: None,
@@ -476,21 +479,20 @@ impl App {
     pub fn pump(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
-                Msg::Scanned(mut lib, took) => {
+                Msg::Scanned(lib, took) => {
                     self.scanning = false;
                     self.last_scan = Some(took);
+                    self.lib = lib;
+                    self.detect_drift();
                     // Apply "enable after install" for freshly downloaded items.
                     if !self.pending_enable.is_empty() {
-                        for a in &mut lib.addons {
+                        for a in &mut self.lib.addons {
                             if a.id.is_some_and(|id| self.pending_enable.remove(&id)) {
                                 a.enabled = true;
                             }
                         }
-                        self.lib = lib;
                         self.enable_deps_of_all_pending();
                         self.write_addonlist();
-                    } else {
-                        self.lib = lib;
                     }
                     self.selected.retain(|k| self.lib.index_of_key(k).is_some());
                     if !self.cjk_loaded && self.cfg.cjk_fonts {
@@ -869,7 +871,10 @@ impl App {
             self.backed_up = true;
         }
         match library::write_addonlist(&path, &self.lib) {
-            Ok(()) => self.pending_write = false,
+            Ok(()) => {
+                self.pending_write = false;
+                self.remember_states();
+            }
             Err(e) => self.toast_err(format!("Couldn't save addonlist.txt: {e}")),
         }
     }
@@ -884,6 +889,80 @@ impl App {
                 a.enabled = *on;
             }
         }
+        self.detect_drift();
+    }
+
+    // ------------------------------------------------------------ addonlist drift
+
+    /// Compares addonlist.txt (already loaded into `lib`) with what this app last saved.
+    fn detect_drift(&mut self) {
+        let before = self.drift.len();
+        let first_run = self.cfg.saved_states.is_empty();
+        self.drift = library::drift(&self.lib.addons, &self.cfg.saved_states);
+        // remember add-ons we haven't seen yet, forget uninstalled ones
+        let keys: HashSet<String> = self.lib.addons.iter().map(|a| a.key.to_lowercase()).collect();
+        let n = self.cfg.saved_states.len();
+        self.cfg.saved_states.retain(|k, _| keys.contains(k));
+        let mut changed = n != self.cfg.saved_states.len();
+        for a in &self.lib.addons {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                self.cfg.saved_states.entry(a.key.to_lowercase())
+            {
+                e.insert(a.enabled);
+                changed = true;
+            }
+        }
+        if changed || first_run {
+            self.save_config();
+        }
+        if self.drift.len() > before {
+            self.toast_err(format!(
+                "addonlist.txt was changed outside the app for {} add-on(s), maybe by a game crash. Review it in Library.",
+                self.drift.len()
+            ));
+        }
+    }
+
+    /// After a successful write: the file now holds the library's states, except drifted
+    /// entries the user hasn't decided on yet (touching one counts as deciding).
+    fn remember_states(&mut self) {
+        let lib = &self.lib;
+        self.drift.retain(|(k, file)| lib.index_of_key(k).is_some_and(|i| lib.addons[i].enabled == *file));
+        let undecided: HashSet<String> = self.drift.iter().map(|(k, _)| k.to_lowercase()).collect();
+        for a in &self.lib.addons {
+            let k = a.key.to_lowercase();
+            if !undecided.contains(&k) {
+                self.cfg.saved_states.insert(k, a.enabled);
+            }
+        }
+        self.save_config();
+    }
+
+    /// Puts drifted add-ons back to the state this app saved.
+    pub fn drift_restore(&mut self, keys: &[String]) {
+        for (k, file) in self.drift.iter().filter(|(k, _)| keys.contains(k)) {
+            if let Some(i) = self.lib.index_of_key(k) {
+                self.lib.addons[i].enabled = !*file;
+            }
+        }
+        self.write_addonlist();
+        if self.game_running {
+            // written once the game exits; the list stays until then
+            self.toast("Game is running: restored states will be saved when it closes");
+        }
+    }
+
+    /// Accepts addonlist.txt's state for drifted add-ons.
+    pub fn drift_keep(&mut self, keys: &[String]) {
+        let saved = &mut self.cfg.saved_states;
+        self.drift.retain(|(k, file)| {
+            let keep = keys.contains(k);
+            if keep {
+                saved.insert(k.to_lowercase(), *file);
+            }
+            !keep
+        });
+        self.save_config();
     }
 
     pub fn delete(&mut self, keys: &[String]) {

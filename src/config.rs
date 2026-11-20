@@ -34,6 +34,9 @@ pub struct Config {
     pub profiles: BTreeMap<String, Vec<String>>,
     /// Workshop id -> what we installed (used for precise update checks)
     pub installed: HashMap<u64, InstallRecord>,
+    /// Lower-cased addonlist key -> enabled, as this app last wrote it. A different value in
+    /// addonlist.txt means something else changed it (the in-game menu, or a crash resetting it).
+    pub saved_states: HashMap<String, bool>,
     /// add-on key -> personal note
     pub notes: HashMap<String, String>,
 }
@@ -56,6 +59,7 @@ impl Default for Config {
             steam_api_key: String::new(),
             profiles: BTreeMap::new(),
             installed: HashMap::new(),
+            saved_states: HashMap::new(),
             notes: HashMap::new(),
         }
     }

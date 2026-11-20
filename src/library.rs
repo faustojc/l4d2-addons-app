@@ -216,6 +216,16 @@ pub fn write_addonlist(path: &Path, lib: &Library) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Add-ons whose enabled state (as loaded from addonlist.txt) differs from `saved`
+/// (lower-cased key -> state this app last wrote): (key, state in the file).
+pub fn drift(addons: &[Addon], saved: &HashMap<String, bool>) -> Vec<(String, bool)> {
+    addons
+        .iter()
+        .filter(|a| saved.get(&a.key.to_lowercase()).is_some_and(|&s| s != a.enabled))
+        .map(|a| (a.key.clone(), a.enabled))
+        .collect()
+}
+
 pub fn scan(addons_dir: &Path) -> Library {
     let mut paths = Vec::new();
     for (dir, ws) in [
@@ -521,6 +531,23 @@ mod tests {
         assert_eq!(pairs.len(), 2, "{pairs:?}");
         assert!(pairs.contains(&(0, 2)));
         assert!(pairs.contains(&(3, 4)));
+    }
+
+    #[test]
+    fn drift_only_for_known_changed_addons() {
+        let mut a = addon(&[]);
+        a.key = "1.vpk".into();
+        a.enabled = true; // file says enabled
+        let mut b = addon(&[]);
+        b.key = r"workshop\2.vpk".into();
+        b.enabled = false;
+        let mut c = addon(&[]);
+        c.key = "new.vpk".into();
+        let saved = HashMap::from([
+            ("1.vpk".to_string(), false),          // app disabled it -> drift
+            (r"workshop\2.vpk".to_string(), false), // unchanged
+        ]);
+        assert_eq!(drift(&[a, b, c], &saved), [("1.vpk".to_string(), true)]);
     }
 
     #[test]

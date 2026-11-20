@@ -37,6 +37,7 @@ It's a native Rust + egui app: one small executable, starts instantly, scans hun
 - **Bulk actions:** multi-select (Ctrl/Shift-click, Ctrl+A), then enable, disable, update or delete. Double-click toggles; right-click opens a menu.
 - **Profiles:** save and apply sets of enabled add-ons, export/import them as JSON. Importing installs any missing Workshop items.
 - **Notes:** a personal, searchable note per add-on.
+- **addonlist.txt watchdog:** the app remembers the states it last saved. If `addonlist.txt` later disagrees (a game crash re-enabling disabled add-ons, or changes in the in-game menu), a banner lists every difference, and you can restore the app's state or keep the file's, one at a time or all at once.
 - **Safe by default:** deletes go to the Recycle Bin / Trash, and `addonlist.txt` is backed up before the first change of each session. If the game is running, changes wait until it exits, because the game rewrites `addonlist.txt` on exit.
 
 ### Preview panel

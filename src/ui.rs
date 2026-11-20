@@ -41,6 +41,10 @@ pub enum Act {
     Category(String),
     WsTag(String),
     Tab(Tab),
+    /// Put drifted add-ons back to the app's saved state.
+    DriftRestore(Vec<String>),
+    /// Accept addonlist.txt's state for drifted add-ons.
+    DriftKeep(Vec<String>),
 }
 
 thread_local! {
@@ -401,6 +405,7 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
 
     lightbox_ui(&ctx);
+    drift_modal(app, &ctx, &mut acts);
     confirm_modal(app, &ctx);
     toasts(app, &ctx);
     apply(app, acts);
@@ -410,6 +415,8 @@ fn apply(app: &mut App, acts: Vec<Act>) {
     for a in acts {
         match a {
             Act::SetEnabled(keys, on) => app.set_enabled(&keys, on),
+            Act::DriftRestore(keys) => app.drift_restore(&keys),
+            Act::DriftKeep(keys) => app.drift_keep(&keys),
             Act::Focus(f) => {
                 if let Focus::Workshop(id) = f {
                     app.request_details([id], DETAILS_TTL);
@@ -778,6 +785,140 @@ fn toasts(app: &App, ctx: &egui::Context) {
     ctx.request_repaint_after(std::time::Duration::from_millis(500));
 }
 
+const DRIFT_OPEN: &str = "drift_open";
+
+/// Shown above the library while addonlist.txt disagrees with what the app saved.
+fn drift_banner(app: &App, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+    if app.drift.is_empty() {
+        return;
+    }
+    let n = app.drift.len();
+    egui::Frame::new()
+        .fill(ORANGE.gamma_multiply(0.14))
+        .stroke(egui::Stroke::new(1.0, ORANGE.gamma_multiply(0.6)))
+        .corner_radius(3)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("⚠").color(ORANGE).size(15.0));
+                ui.label(
+                    RichText::new(format!(
+                        "addonlist.txt differs from the app for {n} add-on(s). The game may have reset them after a crash."
+                    ))
+                    .color(TEXT),
+                );
+                if ui.add(th::Button::new("Review", Kind::Blue)).clicked() {
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(DRIFT_OPEN), true));
+                }
+                if ui
+                    .add(th::Button::new("Restore all", Kind::Dark))
+                    .on_hover_text("Set them back to how this app last saved them")
+                    .clicked()
+                {
+                    acts.push(Act::DriftRestore(app.drift.iter().map(|(k, _)| k.clone()).collect()));
+                }
+            });
+        });
+    ui.add_space(6.0);
+}
+
+/// Per-add-on diff of addonlist.txt vs the app's saved states.
+fn drift_modal(app: &App, ctx: &egui::Context, acts: &mut Vec<Act>) {
+    let id = egui::Id::unique(DRIFT_OPEN);
+    if app.drift.is_empty() || !ctx.data_mut(|d| d.get_temp::<bool>(id)).unwrap_or(false) {
+        return;
+    }
+    let state = |on: bool| if on { ("ENABLED", GREEN) } else { ("DISABLED", GRAY) };
+    let all: Vec<String> = app.drift.iter().map(|(k, _)| k.clone()).collect();
+    let mut close = false;
+    let r = egui::Modal::new(id.with("modal")).show(ctx, |ui| {
+        ui.set_width(620.0);
+        ui.label(caps(&format!("addonlist.txt changes  {}", app.drift.len()), 18.0, TEXT_STRONG));
+        ui.label(
+            RichText::new(
+                "These add-ons are set differently in addonlist.txt than this app last saved them. Usually the game re-enabled them after a crash, or they were changed in the in-game Add-ons menu.",
+            )
+            .color(MUTED),
+        );
+        if app.game_running {
+            ui.label(RichText::new("The game is running: restored states are saved when it closes.").color(ORANGE));
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add(th::Button::new("Restore all", Kind::Green))
+                .on_hover_text("Set every add-on below to the app's state")
+                .clicked()
+            {
+                acts.push(Act::DriftRestore(all.clone()));
+            }
+            if ui
+                .add(th::Button::new("Keep all", Kind::Dark))
+                .on_hover_text("Accept addonlist.txt as it is now")
+                .clicked()
+            {
+                acts.push(Act::DriftKeep(all.clone()));
+            }
+        });
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+            egui::Grid::new("drift_rows")
+                .num_columns(4)
+                .striped(true)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(caps("Add-on", 10.0, DIM));
+                    ui.label(caps("addonlist.txt", 10.0, DIM));
+                    ui.label(caps("App", 10.0, DIM));
+                    ui.label("");
+                    ui.end_row();
+                    for (k, file) in &app.drift {
+                        let title = app
+                            .lib
+                            .index_of_key(k)
+                            .map(|i| app.display_title(&app.lib.addons[i]))
+                            .unwrap_or_else(|| k.clone());
+                        ui.allocate_ui(egui::vec2(250.0, 20.0), |ui| {
+                            ui.set_width(250.0);
+                            ui.add(egui::Label::new(RichText::new(title).color(TEXT)).truncate())
+                                .on_hover_text(k);
+                        });
+                        let (f, fc) = state(*file);
+                        let (s, sc) = state(!*file);
+                        badge(ui, f, fc, "");
+                        badge(ui, s, sc, "");
+                        ui.horizontal(|ui| {
+                            let fix = if *file { "Disable" } else { "Enable" };
+                            if ui
+                                .add(th::Button::new(fix, Kind::Blue))
+                                .on_hover_text("Restore the app's state")
+                                .clicked()
+                            {
+                                acts.push(Act::DriftRestore(vec![k.clone()]));
+                            }
+                            let keep = if *file { "Keep enabled" } else { "Keep disabled" };
+                            if ui
+                                .add(th::Button::new(keep, Kind::Dark))
+                                .on_hover_text("Accept addonlist.txt's state")
+                                .clicked()
+                            {
+                                acts.push(Act::DriftKeep(vec![k.clone()]));
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+        });
+        ui.add_space(10.0);
+        if ui.add(th::Button::new("Close", Kind::Dark).min_width(90.0)).clicked() {
+            close = true;
+        }
+    });
+    if close || r.should_close() {
+        ctx.data_mut(|d| d.remove::<bool>(id));
+    }
+}
+
 fn confirm_modal(app: &mut App, ctx: &egui::Context) {
     let Some(c) = &app.confirm else { return };
     let mut close = false;
@@ -865,6 +1006,7 @@ fn library_tab(app: &mut App, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         .frame(central_frame())
         .show(ui, |ui| {
             paint_backdrop(ui);
+            drift_banner(app, ui, acts);
             // toolbar (wraps instead of disappearing under the preview when the list gets narrow)
             ui.horizontal_wrapped(|ui| {
                 let r = th::search_box(
